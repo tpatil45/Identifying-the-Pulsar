@@ -1,0 +1,538 @@
+---
+title: "IST 707 Bonus Project"
+author: "Tejas Patil"
+date: "2020 M05 3"
+output: html_document
+---
+
+#### __Executive Summary__:
+##### __Problem Statement:__
+##### The objective of this assignment is to analyze the given data and build machine learning models which are able to identify the 'Pulsar stars'. Receivers are placed around different locations on Earth which receive the electro-magnetic signal and store the data. This data is processed and transformed to a correct form to use for future predictions. We are looking for electro-magnetic pulses of high intensity emitted by the Pulsar stars that sweep through the universe. Most of the signals are merely radio frequency interference (RFI) produced from the planet earth. This data is thus imbalanced, with very rare and important points reflecting 'Pulsar stars.'
+##### __1. Data Load and Cleanup:__
+##### This section deals with cleaning the data. We'll check the data for missing values, outliers etc. and treat those observations with suitable values. The data will also be checked for presence of any duplicate values. It also includes statistical analysis of the data.
+##### __2. Exploratory Data Analysis: Part 1__
+##### This section involves a deeper understanding of the data using tabular and visual representation of the data. The importance of features with respect to classification of target variable will be observed. Features will be tested for multi-collinearity and significance.
+##### __3. Exploratory Data Analysis: Part 2__
+##### In supervised learning, we are only interested in separating the pulsars from the rest. While unsupervised learning is more about organizing the data points in an unspecified number of natural categories. Hence, we will perform unsupervised learning (clustering) to identify the terrestrial/extra-terrestrial interference in the data.
+##### __4.Model building and evaluation:__
+##### Two supervised learning classification models will be built to predict the predict the pulsar stars.  Models will be evaluated based on suitable evaluation parameters __(Accuracy and Recall)__
+##### Link to the Dataset: [https://www.kaggle.com/pavanraj159/predicting-a-pulsar-star/download]
+
+### __1. Data load and Cleanup__
+
+##### Importing the necessary libraries 
+```{r , message=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(corrplot)
+library(tidyverse)
+library(viridis)
+library(caret)
+library(DMwR)
+library(factoextra)
+library(pROC)
+library(recipes)
+library(keras)
+library(yardstick)
+```
+
+##### Importing the csv file into R enviornment and checking the structure (data type of variables) of the dataset.
+##### We observed that the target variable is binary and depending on the problem statement, converting the target variable to factor data type.
+##### The dataset has 8 independent variables and 1 dependent variable. All the independent variables are calculated from a single signal.
+```{r}
+pulsar_df <- read.csv('pulsar_stars.csv', stringsAsFactors = T)
+#str(pulsar_df)
+pulsar_df$target_class <- as.factor(pulsar_df$target_class)
+```
+
+##### Renaming the variables to short names and checking the statistical summary of the dataset.
+##### All the independent variables are of numeric data type and are of different scales.
+```{r}
+colnames(pulsar_df) <- c('Mean_Int_Prof', 'Std_Int_Prof', 'ExKurt_Int_Prof', 'Sk_Int_Prof', 'Mean_DMSNR', 'Std_DMSNR', 'ExKurt_DMSNR', 'Sk_DMSNR', 'Pulsar')
+#summary(pulsar_df)
+```
+
+##### Checked the data for Missing values. The results returned shows us that there are __no missing values__ in the data
+```{r}
+apply(is.na(pulsar_df),2,sum)
+```
+
+##### Checked the data for duplicate observations. The results returned shows us that there are __no duplicate observations__ in the data.
+```{r}
+nrow(pulsar_df) - nrow(unique(pulsar_df))
+```
+
+### __2. Exploratory Data Analysis: Part 1__
+
+#### __Analysing the target variable__
+##### We find that the target variable is of binary type and has 2 levels in it. So, this is a binary classification problem.
+##### __Imbalanced Data:__ The positie values in data are 1639, which is very less as compared to the negavtive results, 16259.
+```{r}
+str(pulsar_df$Pulsar)
+table(pulsar_df$Pulsar)
+```
+
+##### For analyzing the data, we create a new dataframe containing only numerical attributes (independent variables).
+```{r}
+num_df <- pulsar_df[sapply(pulsar_df, is.numeric)]
+#str(num_df)
+```
+
+##### Creating a function to generate a grid plot for displaying boxplots for all the numerical variables. We see that there are considerable __outliers__ in all the in this dataset variables.
+##### It is observed that almost all the numerical variables in this data contain outliers. Although outliers should be treated, in this case outliers might be very important for predictions, as high intensity pulsar signals  are very different from radio waves interference.
+```{r}
+box_plot <- function(data_in, i) {
+  p <- ggplot(data_in, aes(y = data_in[,i])) + geom_boxplot(color="black", fill="red", alpha=0.2) + ggtitle(colnames(data_in)[i]) + ylab("Distribution") + theme(legend.position="none")
+  return (p)
+}
+
+mygrid2 <- list()
+for (i in 1:length(num_df)){
+  myplot2 <- box_plot(num_df, i)
+  mygrid2 <- c(mygrid2, list(myplot2)) 
+}
+do.call("grid.arrange", c(mygrid2, ncol=2))
+```
+
+##### Since, the outliers might be important in this case, we create __two datasets__. One treated with outliers and second without treating the outliers.
+##### 'no_outliers_df' will be treated for outliers.
+##### 'pulsars_df' will __NOT__ be treated for outliers.
+```{r}
+no_outliers_df <- pulsar_df
+```
+
+##### Creating a function to treat outliers by winsorizing. We will use the __Inter-Quartile Range__ method to winsorize the outliers. 
+```{r}
+#Outlier Treatment by Winsorizing
+Out_Treat_W = function(x){
+  Q1 = quantile(x, 0.25)
+  Q3 = quantile(x, 0.75)
+  IQR = Q3 - Q1
+  LC = Q1 - 1.5*IQR
+  UC = Q3 + 1.5*IQR
+  Out_Count = sum(x > UC | x < LC)
+  UOut <- which(x > UC)
+  LOut <- which(x < LC)
+  for (i in 1:length(UOut)){
+    x[UOut[i]] <- UC
+  }
+  for (i in 1:length(LOut)){
+    x[LOut[i]] <- LC
+  }
+  return(x)
+}
+
+#Treating the outliers
+for(i in 1:length(colnames(no_outliers_df))){
+  if(class(no_outliers_df[,i]) == "numeric"){
+    no_outliers_df[,i] <- Out_Treat_W(no_outliers_df[,i])
+  }
+}
+```
+
+##### Creating a function to generate Histogram for numerical variables. Implementing that function on every variable in num_df dataset.
+##### Note: Here we will be checking the distribution of numerical variables that are not treated for outliers.
+##### Observations: It is observed that Mean, standard deviation of Integrated profile and Kurtosis for DM-SNR curve are normally distributed. All other variables have a right-skewed distribution. 
+```{r}
+hist_plot <- function(data_in, i) {
+  data <- data.frame(x=data_in[[i]])
+  p <- ggplot(data=data, aes(data[,1])) + 
+    geom_histogram(bins = 30, col="red", aes(fill=..count..)) +
+    xlab(colnames(data_in)[i]) +
+    scale_fill_gradient("Count", low="green", high="red")
+  return (p)
+}
+mygrid2 <- list()
+for (i in 1:length(num_df)){
+  myplot2 <- hist_plot(num_df, i)
+  mygrid2 <- c(mygrid2, list(myplot2)) 
+}
+do.call("grid.arrange", c(mygrid2, ncol=2))
+```
+
+##### __Correlation Plot:__ Plotting the correlation matrix to check for the __multicollinearity__ between numeric independent variables. We observe that Kurtosis and skewness for both Integrated profile and DM-SNR curve are __highly correlated__ respectively. Multi-collinearity can be a problem if we are using the data for __regression__ models as highly correlated variables will affect the value of coefficient of each other. Since, we do not plan to use regression algorithms for this assignment, we will not make any changes.
+```{r}
+corMatrix <- cor(num_df)
+corrplot(corMatrix, method = "number", type = "upper")
+```
+
+#### __Bivariate Analysis:__
+##### Making a function to plot boxplots for bivariate analysis
+```{r}
+bivariate_plot <- function(num_var, title){
+  plt <- pulsar_df %>% ggplot( aes(x=Pulsar, y=num_var, fill=Pulsar)) + geom_boxplot() +
+    scale_fill_viridis(discrete = T, alpha=0.5) +
+    theme(legend.position="none", plot.title = element_text(size=11)) +
+    ggtitle(title) + xlab("Pulsar Star") + ylab("Distribution")
+  return(plt)
+}
+```
+
+##### __Mean Integrated Profile Vs Pulsar__: Mean of Integrated profile for a particular signal is relatively lower for the signals of actual pulsar stars.
+```{r}
+bivariate_plot(pulsar_df$Mean_Int_Prof, "Mean Integrated Profile Vs Pulsar")
+```
+
+##### __Kurtosis Integrated Profile Vs Pulsar__: Kurtosis is the measurement of sharpness of the peak of a frequency distribution curve. It is observed that the peakedness of the curve of integrated profile distribution is higher for actual pulsar signals. 
+```{r}
+bivariate_plot(pulsar_df$ExKurt_Int_Prof, "Excess Kurtosis Integrated Profile Vs Pulsar")
+```
+
+##### __Standard Deviation DM-SNR Curve Vs Pulsar__: The standard deviation for the frequency distribution curve for DM-SNR if more for a pulsar signal than a random noise. 
+```{r}
+bivariate_plot(pulsar_df$Std_DMSNR, "Standard Deviation DM-SNR Curve Vs Pulsar")
+```
+
+
+
+##### __Skweness DM-SNR Curve Vs Pulsar__: It is observed that the DM-SNR curve of an actual pulsar signal is less skewed than radio wave interference. Also, the distribution for pulsar signal is less spread out and is compact.
+```{r}
+bivariate_plot(pulsar_df$Sk_DMSNR, "Skweness DM-SNR Curve Vs Pulsar")
+```
+
+### __3. Exploratory Data Analysis: Part 2__
+##### Unsupervised learning helps us identify the natural groups present in our data. In this case we want to identify the signal categories naturally present in our data. Most of the noise in the data is generated by the Radio frequency interference. Identifying the categories will help in identifying the sources of the signals, which will help in future to develop counter measures against them. But, all this is part of future scope of this project. We will use k-means clustering as a model for unsupervised learning.
+
+#### __K-Means Clustering:__
+##### K-means is a partitional type of clustering algorithm. It means that we must define the number of clusters prior to running the model. K-means is a __distance based__ algorithm. Hence, we need to be careful about two things here.
+##### 1] We'll use the data that is treated for outliers. __Outliers__ can affect the positioning of centroids of the clusters.
+##### 2] We need to __normalize__ or scale the data before performing clusterig analysis on the data.
+
+```{r}
+no_outliers_sc <- no_outliers_df[,-which(colnames(no_outliers_df) == "Pulsar")]
+
+#Normalizing no_outliers_df
+norm_ZN <- function(x){
+  y <- c()
+  for (i in 1:length(x)){
+    y <- c(y, ((x[i]) - min(x))/(max(x) - min(x)))
+  }
+  return(y)
+}
+for(i in 1:length(colnames(no_outliers_sc))){
+  no_outliers_sc[,i] <- norm_ZN(no_outliers_sc[,i])
+}
+```
+
+##### To know the optimum number of clusters beforehand, the __elbow curve__ needs to be plotted with sum of squared error on the Y-axis and number of clusters on X-axis. The sum of squared errors is calculated by taking the sum of the euclidean distance between centroid and each data point in that cluster. This process is repeated for each cluster. A sharp bend in the curve signifies a drastic decrease in reduction of sum of squared error. That point is considered as the optimum number of clusters.
+##### For our data, the optimum number for clusters is 2. We specify maximum iterations for our model to be 100 which should be sufficient for the centroid points to attain their best position.
+##### __Search for best K__
+##### From the elbow curve, we know that there are __2__ types of groups that naturally exist in our datasets.
+```{r}
+set.seed(15)
+find_K <- function(K){
+  return(kmeans(no_outliers_sc, K, nstart = 20)$tot.withinss)
+}
+k_val <- 1:8
+find_K_val <- purrr::map_dbl(k_val, find_K)
+
+#Elbow Curve
+plot(x = k_val, y = find_K_val, 
+     type = "b", frame = F,
+     xlab = "Number of clusters K",
+     ylab = "Total within-clusters sum of squares")
+```
+
+##### Building the final model of k-means clustering with K (no. of clusters = 2).
+```{r}
+kmeans_star <- kmeans(no_outliers_sc, centers = 2, nstart = 20, iter.max = 100, algorithm = "Hartigan-Wong")
+```
+
+##### Clusters 2D representation. The following graph shows the 2D representation of data points grouped into 2 clusters. It is observed that dimension 1 explains more than 50% of the variance in our data, while dimension 2 explains more than 30% of the variance in the data.
+```{r}
+fviz_cluster(kmeans_star, data = no_outliers_sc)
+```
+
+##### Standard Scaling the Data (Both 'pulsar_df' and 'no_outliers_df')
+```{r}
+for(i in 1:length(colnames(pulsar_df))){
+  if(class(pulsar_df[,i]) == "numeric"){
+    pulsar_df[,i] <- as.vector(scale(pulsar_df[,i]))
+  }
+}
+
+for(i in 1:length(colnames(no_outliers_df))){
+  if(class(no_outliers_df[,i]) == "numeric"){
+    no_outliers_df[,i] <- as.vector(scale(no_outliers_df[,i]))
+  }
+}
+```
+
+
+##### Splitting the entire data into two parts, training and validating datasets. Here we are using __70-30__ split.
+##### Note: Splitting is performed on both __'pulsar_df'__ and __'no_outliers_df'__.
+```{r}
+set.seed(73)
+train_index <- createDataPartition(pulsar_df$Pulsar, p = 0.70, list = FALSE)
+train_df <- pulsar_df[train_index, ]
+validate_df <- pulsar_df[-train_index, ]
+
+no_outliers_tr <- no_outliers_df[train_index, ]
+no_outliers_val <- no_outliers_df[-train_index, ]
+```
+
+### __4. Model building and Evaluation__
+
+##### For this assignment, we will be using 2 supervised machine learning models: Support Vector Machines and Artificial Neural Network.
+##### a] __Support Vector Machines:__ Since this is a classification problem and all the independent variables are numerical, distance based algorithms like Support vector machines and K-nearest neighbors will be a good fit over this data. Based on the performance of models in assignment 3, we choose SVM over KNN for this assignment.
+##### b] __Artificial Neural Network:__ Amongst all the classification algorithms studied in over the IST 707 course, Artificial neural network (with 2 hidden layers) and gradient boosting algorithm were the most efficient algorithm with respect to accuracy and time required, as seen in assignment 3. On this dataset, we tested both the models and it was seen that ANN2 gave better results than gradient boosting. Hence, we choose ANN2.
+##### Note: The code for gradient boosting model is at the end of the assignement and is not a part of this assignment. It is just for reference.
+
+### __a] Support Vector Machines: Non-Linear__
+##### __Model Description:__ Non-linear function helps in classification when a linear decision boundary is not able to classify the dataset. Mathematically, we should project the data into __higher dimensions__ and use the same linear boundary (hyperplane) to seperate the classes. These __calculations become very complicated__ especially for higher dimension. Hence, SVM uses __kernel trick__ i.e. nothing but finding and applying a function that can perform the same calculations (measuring the similarity) in lower dimension only and hence reducing the computation time. 
+
+##### We ran the base model for both 'pulsar_df' and 'no_outliers_df'. It was observed that model performs well on data with outliers (as outliers are important in this case). Higher recall and accuracy values were measured for both training and validation for data with outliers.
+```{r}
+svm_base_Out_Yes <- train(Pulsar ~ ., data = train_df, method = "svmRadial", verbose=F,
+                          metric="Accuracy")
+print(svm_base_Out_Yes)
+
+#svm_base_Out_No <- train(Pulsar ~ ., data = no_outliers_tr, method = "svmRadial", verbose=F,
+#                          metric="Accuracy")
+#print(svm_base_Out_No)
+```
+
+##### __Predictions:__ Now, predicting the values on validation data using the baseline support vector machine model. It is observed that recall is very less as compared to precision and accuracy. This problem is because of the imbalance in the dataset. The recall is observed close to 84%.
+```{r}
+svm_base_predict <- predict(svm_base_Out_Yes, newdata = validate_df)
+confusionMatrix(svm_base_predict, validate_df$Pulsar, positive = "1", mode = "prec_recall")
+
+#svm_base_predict_No <- predict(svm_base_Out_No, newdata = no_outliers_val)
+#confusionMatrix(svm_base_predict_No, no_outliers_val$Pulsar, positive = "1", mode =
+#                  "prec_recall")
+```
+
+### __Handling the imbalance problem:__
+##### Since the data is imbalanced, accuracy won't be a good measure to evaluate the performance of our model.  We need to use the metric those are not sensitive to the imbalanced problem of target variable.
+##### 1] __Recall:__ Note that recall is very important is this problem because of two reasons. First, this data has already been surveyed and most of the pulsar stars have already been found. So, the new discoveries will be limited. So, our model needs to be as sensitive as possible such that False negative values should tend to 0. Second, the positive values in target variable are only those which previously have been identified as Pulsar. The aim of building this model is to find new observations those are pulsars. Hence, the recall values need to be as high as possible.
+##### 2] __False Positive Rate:__ The reason to check this parameter is that if our model identifies a __new pulsar star__ (the one which was not discovered before), then that newly predicted pulsar star will fall into the category "false positive" with respect to old beliefs. 
+#### __SMOTE (Synthetic minority oversampling technique):__
+##### Right Now our recall is close to 86%. We need to increase the recall value. Because of the imbalance in our data, most of the value are predicted as 0's (Not a pulsar). Hence, we need to over sample the minority class. Recent discoveries have shown that, hybrid sampling gives better results than just oversampling or undersampling. Hybrid sampling is a mix of both under and over sampling. Hence, we perform hybrid sampling on data using SMOTE algorithm. SMOTE uses K-Nearest neighors to over sample the data.
+##### It is very important to perform SMOTE sampling only on training data after the train test split. Otherwise, it might create a problem of data leakage from training to validation data. 
+##### New values counts are calculated as follows:
+##### New Minority count = Original Minority count + [(perc.over / 100) x Original Minority count]
+##### New Majority Count = [New Minority Count x (perc.under/100)] - [(perc.under/100) x Old Minority Count]
+```{r}
+set.seed(73)
+train_sm <- SMOTE(Pulsar~., train_df, perc.over = 500, k = 30, perc.under = 200)
+```
+
+##### Checking the distribution of target variable after SMOTE. We tried to keep the count majority class same as before to prevent data loss. The minority class is oversampled to 6 times that of the original values.
+```{r}
+print("Previous distribution: ")
+print(table(train_df$Pulsar))
+
+print("After SMOTE distribution: ")
+print(table(train_sm$Pulsar))
+```
+
+### __SVM NonLinear Tuned__
+##### Non Linear SVM uses "svmRadial" function instead linear function for the calculation of the __similarity between landmarks and any given point__. For SVM, every other point is the landmark with respected to the given point. The similarity (distance) with every other observation is calculated for every observation. For this calculation svmRadial function is used.
+##### __Hyperparameters:__
+##### 1] __Cost Parameter 'C':__ SVM can have __soft margin__ which means it can have flexible decision boundary. It can be done by adding __slack variable__ to the minimize function while creating the boundary. To __compensate for the slack variable__ we have to add this __'C'__ parameter to the cost function. 'C' allows the misclassification of some points so we might get boundary with large margin and help in reducing the generalization error. Higher 'C' value might result in __overfitting__.
+##### 2] __Sigma:__ Sigma is a parameter of radial function. Radial function is similar to __Guassian distribution__ where:
+##### *__lambda = 1/(2(sigma-squared))__* where lambda is a gaussian parameter
+```{r}
+svm_nl_tuned <- train(make.names(Pulsar) ~ ., data = train_sm,
+                      tuneGrid = expand.grid(sigma = seq(0.3, 0.5, 0.1), C = seq(1.5, 2.5,0.5)),
+                      method = "svmRadial",
+                      trControl = trainControl(method = "cv", number = 3, classProbs = T,
+                                               summaryFunction = prSummary),
+                      verbose=F, metric="Recall")
+
+print(svm_nl_tuned)
+```
+
+##### __Predictions:__ Now, predicting the values on validation data using the tuned SVM Non-Linear model. It is observed that the recall has increased from 84% to ~92%. This increase in Recall is observed due to SMOTE algorithm. Even after increasing the recall, the accuracy does not decrease and stays the same.
+##### __Very Important Observation:__ Although, it is observed that precision is reduced to a smaller value, it means that new observations are classified as Pulsar stars __(False Positives)__. We need to focus on these data points as they might represent the pulsar star which are not discovered yet.
+```{r}
+svm_nl_tuned_predict <- predict(svm_nl_tuned, newdata = validate_df)
+confusionMatrix(svm_nl_tuned_predict, as.factor(make.names(validate_df$Pulsar)), positive = "X1", mode = "prec_recall")
+```
+
+##### __ROC and AUC:__
+##### Plotting the roc curve and calculating the area under that curve. First, creating a function for plotting ROC curve and using the same function for the next models.
+##### The ROC curve looks almost like a best fit with an AUC value of more than 0.98.
+```{r}
+ROC_AUC <- function(true_val, probs){
+  roc_curve=roc(response=true_val, predictor= probs)
+  fig <- plot(roc_curve, col="red", lwd=3, main="ROC curve")
+  score <- auc(roc_curve)
+  ro_au <- list(fig, score)
+  return(ro_au)
+}
+svm_probs <- predict(svm_nl_tuned, newdata = validate_df, type = 'prob')
+ROC_AUC(as.factor(make.names(validate_df$Pulsar)), svm_probs$X1)
+```
+
+### __b] Artificial Neural Networks__
+
+##### __Transforming the data for neural networks:__
+##### All the data should be numeric data type except the target variable. Trying the __'receipe'__ library for preprocessing the data. Since, our data is already pre-processed and cleaned we do not need to do much.
+##### Splitting the data into training and validation to check for the overfitting of the deep learning models.
+```{r}
+set.seed(73)
+rec_obj <- recipe(Pulsar ~ ., data = train_sm) %>% prep(data = train_sm)
+
+train_x <- bake(rec_obj, new_data = train_sm)
+validate_x <- bake(rec_obj, new_data = validate_df)
+train_y <- ifelse(pull(train_sm, Pulsar) == "1", 1, 0)
+validate_y <- ifelse(pull(validate_df, Pulsar) == "1", 1, 0)
+
+train_x <- train_x[, -which(colnames(train_x) == "Pulsar")]
+validate_x <- validate_x[, -which(colnames(validate_x) == "Pulsar")]
+```
+
+##### __Model Description:__
+##### Aritificial neural network with 2 hidden layers is a multilayer perceptron model. There will be an input layer, 2 hidden layers and a output layer. Input layer is nothing but the training example, so we do not need to specify it. The __linear combination__ of input values and weights of the links is processed through and converted to required format by activation function. In this case the activation function for the output layer is __sigmoid function__, since this is a binary classification problem. 
+##### __Strategy:__ Since, grid search is not possible in keras, we will be using nested for loops for tuning the hyperparamters.
+##### __Hyperparameters:__
+##### 1] epochs: Number of epochs is the numer of times that whole dataset has completed a forward and backward journey through the network.  
+##### 2] batch size: It is not possible to send whole data at once through the network, hence we create small batches of training examples. Number of example in any batch is known as batch size.
+##### 3] Nodes in Hidden Layer 2: In addition to batch size and epochs, we will tunenumber of nodes in second hidden layer.
+##### __Nodes and Layers:__
+##### In the input layer we will have nodes = number of variables and in the output node there will be only one node since, it is a binary classification problem. For a multiple class classification, nodes in output function = number of classes.
+##### __Activation Function:__
+##### For output layer, it will be __Sigmoid Function__, because this is a binary classification problem and output of sigmoid function is probability between 0 and 1. We will use the threshold of 0.5 to classify as either 1 or 0. For both the hidden layers we will be using __'Relu'__ acivation function.
+##### __Regularization:__
+##### layer_dropout: Temporarily some random nodes are dropped out from a particular layer i.e. they are not considered in calculation for forward pass nor are they considered for updating weights in backward pass. This helps other nodes in that layer to develp relation within network. Here, we specify the probability of dropout to be 20% for 1st hidden layer and 10% for 2nd hidden layer.
+##### __Optimzation:__
+##### The process of changing the weights of connecting links is defined by optimizer. For example, __learning rate__ parameter of gradient descent tells us by how much should  we change the weights. Higher values take less time to run, but might ___overshoot the global/local minima__ and hence it is very important to define right value for learning rate and finding the right optimizer. In this case, we are using __adam__ as our optimization function.
+##### __Loss Function:__
+##### We have to define a loss function that will calculate the difference between __actual value and predicted value__. That function will use this difference to __update the weights__ of the connecting links. In this case, since it is a binary classification problem, we use __binary_crossentropy__ loss function.
+```{r}
+batch_size_grid <- c(64,128)
+epochs_grid <- c(40,60)
+hid_nod_grid <- c(5,7,9) 
+
+ann2_models <- list()
+ann2_fits <- list()
+
+p <- 1
+for (i in 1:length(batch_size_grid)){
+  for (j in 1:length(epochs_grid)){
+   for (k in 1:length(hid_nod_grid)){
+      keras2_model <- keras_model_sequential()
+      keras2_model %>%
+        layer_dense(units = 9, kernel_initializer = "uniform", activation = "relu", input_shape
+                    = ncol(train_x)) %>%
+        layer_dropout(rate = 0.2) %>%
+        layer_dense(units = hid_nod_grid[k], kernel_initializer = "uniform", activation =
+                      "relu") %>%
+        layer_dropout(rate = 0.1) %>%
+        layer_dense(units = 1, kernel_initializer = "uniform", activation = "sigmoid") %>%
+        compile(optimizer = "adam", loss = "binary_crossentropy", metrics = c("accuracy"))
+  
+      keras2_fit <- fit(object = keras2_model, x = as.matrix(train_x), y = train_y, batch_size =
+                          batch_size_grid[i], epochs = epochs_grid[j], validation_split = 0.20,
+                          verbose = F)
+      ann2_models[[p]] <- keras2_model
+      ann2_fits[[p]] <- keras2_fit
+      p <- p + 1
+    }
+  }  
+}
+```
+
+##### __Finding the Best Model:__ 
+##### Using the __average validation accuracy__ over all epochs as metric to select best model.
+##### Important Observation: After running the model multiple times for different hyperparameter values, we found that best batch_size is 64, while best epochs number keeps on fluctuating between these 3 values.
+```{r}
+avg_acc <- c()
+for (i in 1:length(ann2_models)){
+  valacc <- ann2_fits[[i]]$metrics$val_accuracy
+  avg_acc[i] <- sum(valacc)/length(valacc)
+}
+best_model_Index <- which.max(avg_acc)
+keras2_best_model <- ann2_models[best_model_Index][[1]]
+keras2_best_fit <- ann2_fits[best_model_Index][[1]]
+
+paste0("Batch Size for best model is: ", keras2_best_fit$params$batch_size)
+paste0("No. Epochs for best model is: ", keras2_best_fit$params$epochs)
+```
+
+##### Plotting the fitted model over the training dataset. This plots gives us the comparison between training accuracy/loss and validation accuracy/loss. If the difference between training and validation accuracy is increasing that means the model is getting overfitted.
+```{r}
+plot(keras2_best_fit)
+```
+
+##### __Predictions:__ 
+##### Now, making prediction on the validation data using the best model. Predicting the classes as well as the probabilities for the instances.
+```{r}
+pred_class_keras2 <- predict_classes(object = keras2_best_model, x = as.matrix(validate_x)) %>%
+as.vector()
+pred_prob_keras2 <- predict_proba(object = keras2_best_model, x = as.matrix(validate_x)) %>%
+as.vector()
+```
+
+##### __Performance Evaluation Parameters:__
+##### Plotting the confusion matrix and calculating __Accuracy, Recall and Precision__. 
+```{r}
+estimates_keras2_tbl <- tibble(truth = as.factor(validate_y),estimate =
+                                 as.factor(pred_class_keras2),class_prob = pred_prob_keras2)
+
+options(yardstick.event_first = F)
+estimates_keras2_tbl %>% conf_mat(truth, estimate)
+estimates_keras2_tbl %>% metrics(truth, estimate)
+estimates_keras2_tbl %>% recall(truth, estimate)
+estimates_keras2_tbl %>% precision(truth, estimate, beta = 1)
+```
+
+##### __ROC and AUC:__
+##### Plotting the ROC curve and calculating the area under curve.
+```{r}
+ROC_AUC(validate_y, pred_prob_keras2)
+```
+
+### __Conclusion:__
+##### 1] The overall objective of this project was to show how Data Analytics is used for research in the field of Physics. Today, the world of physicists want to find new pulsar stars, as they can help us find a binary solar system where a pulsar star and a black hole exist together. This can help us understand the mysteries of black hole and physics that we do not understand.
+##### 2] The specific objective of this project was to predict a pulsar star and find new pulsar stars. As the new puslar star exist in our data (the one that we do not know if it is pulsar or not), the evaluation metrics used were Recall and False Positive Rate.
+##### 3] We succesfully constructed 2 supervised machine learning models, having a accuracies more than 97% and Recall close to 92%.
+
+### __Future Scope:__
+##### 1] Include more variables in data. For e.g., CIDER (Confidence Index in extra terrestrial origin) is a calculated value for a signal, which is used to distinguish RFI's from the signals received from space. 
+##### 2] In future, a better sampling technique can be used that will help us in creating a balanced target variable data. A balanced dataset can improve the recall value further from 92% with a higher precision value as well.
+
+
+
+### __Code used for testing, but not a part of the assignment__
+
+##### __Gradient Boosting Machine__
+##### __Gradient Boosting Machine - Base Model__
+##### __Model Description:__ Just like random forest GBM model also works with multiple decision trees. Only diffrence is that in random forest all the trees run in parallel. __In GBM, trees run in series__. After every iterations the __weights__ for the samples (observations) are updated. The samples which were misclassified are given more weights than the one which were classified correctly. Adding to that __boosting works on sampling with replacement__. The samples which were not selected in the first iterations will also be given __higher weights__ in next iterations. In this way the model progresses and helps us in __reducing the bias__.
+```{r}
+#gbm_base <- train(Pulsar ~ ., data = train_sm, method = "gbm", verbose = F)
+#print(gbm_base)
+```
+
+##### __Predictions:__ Now, predicting the values on validation data using the baseline gradient boosting model.
+```{r}
+#gbm_base_predict <- predict(gbm_base, newdata = validate_df)
+#confusionMatrix(gbm_base_predict, validate_df$Pulsar, positive = "1", mode = "prec_recall")
+```
+
+
+### __GBM Tuned__
+##### Now tuning the hyperparameters, we will be tuning model as a whole and individual trees as well:
+##### 1]__interaction.depth__: this parameter specifies that how many splits we will perform on every decision tree in so that we will get the specified number of nodes in a decision tree. It is the maximum number of nodes in a decision tree. The value "6" is generally considered to be best for giving significant results.
+##### 2] __n.tree__: This value tells the model how many decision trees to include in our entire model.
+##### 3] __shrinkage__: This parameter defines the learning rate of gbm model. Just like L1 regularisations helps in reducing the unimportant features in regression, shrinkage parameter in gbm helps reduce the importance of useless decision trees. Smaller teh value for shrinkage parameter, slower the model will converge to the global minima. "0.01" values is preferred for any datasets having 10,000+ observations.
+##### 4] __n.minobsinnode__: minimum number of observations in the leaf nodes of the decision trees. 10 is considered to be good and big enough number. It should be less for smaller data with respect to rows.
+```{r}
+#tuneGrid_gbm <- expand.grid(interaction.depth=c(6,10,14), n.trees = c(800,1000,1200),
+#                            shrinkage=c(0.01), n.minobsinnode=c(10,15,20))
+
+#trainControl_gbm <- trainControl(method="cv", number=3, classProbs = TRUE, summaryFunction =
+#                                   prSummary)
+#set.seed(73)
+#gbm_tuned <- train(make.names(Pulsar) ~ ., data = train_sm,
+#                       tuneGrid = expand.grid(tuneGrid_gbm), method = "gbm",
+#                       trControl = trainControl_gbm, verbose=F, metric="Recall")
+#print(gbm_tuned)
+```
+
+##### __Predictions:__ Now, predicting the values on validation data using the tuned gradient boosting model.
+```{r}
+#gbm_tuned_predict <- predict(gbm_tuned, newdata = validate_df)
+#confusionMatrix(gbm_tuned_predict, as.factor(make.names(validate_df$Pulsar)), positive = "X1", mode = "prec_recall")
+```
